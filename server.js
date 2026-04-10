@@ -29,7 +29,7 @@ app.post('/api/create-pix-payment', async (req, res) => {
             transaction_amount: valor,
             description: descricao,
             payment_method_id: 'pix',
-            date_of_expiration: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 minutos
+            date_of_expiration: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
             payer: {
                 email: email || 'cliente@email.com',
                 first_name: nome || 'Cliente',
@@ -60,17 +60,58 @@ app.post('/api/create-pix-payment', async (req, res) => {
     }
 });
 
-// ===== ENDPOINT: Criar preferência de pagamento com cartão/boleto =====
+// ===== ENDPOINT: Criar pagamento com cartão (Checkout Transparente) =====
+app.post('/api/create-card-payment', async (req, res) => {
+    try {
+        const { valor, descricao, nome, email, cpf, token, paymentMethodId, installments } = req.body;
+        
+        const payment = new Payment(client);
+        
+        const paymentData = {
+            transaction_amount: valor,
+            description: descricao,
+            payment_method_id: paymentMethodId || 'visa',
+            token: token,
+            installments: installments || 1,
+            payer: {
+                email: email || 'cliente@email.com',
+                first_name: nome || 'Cliente',
+                identification: cpf ? {
+                    type: 'CPF',
+                    number: cpf
+                } : undefined
+            }
+        };
+
+        const result = await payment.create({ body: paymentData });
+        
+        res.json({
+            success: true,
+            payment_id: result.id,
+            status: result.status,
+            status_detail: result.status_detail
+        });
+        
+    } catch (error) {
+        console.error('Erro ao criar pagamento com cartão:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Erro ao criar pagamento'
+        });
+    }
+});
+
+// ===== ENDPOINT: Criar preferência de pagamento (Checkout Pro) =====
 app.post('/api/create-preference', async (req, res) => {
     try {
-        const { valor, descricao, nome, email } = req.body;
+        const { valor, descricao, nome, email, pedidoId } = req.body;
         
         const preference = new Preference(client);
         
         const preferenceData = {
             items: [
                 {
-                    id: crypto.randomUUID(),
+                    id: pedidoId || crypto.randomUUID(),
                     title: descricao,
                     quantity: 1,
                     currency_id: 'BRL',
@@ -82,16 +123,16 @@ app.post('/api/create-preference', async (req, res) => {
                 name: nome || 'Cliente'
             },
             back_urls: {
-                success: 'https://gilalmeidaarte.com.br/sucesso.html',
-                failure: 'https://gilalmeidaarte.com.br/falha.html',
-                pending: 'https://gilalmeidaarte.com.br/pendente.html'
+                success: `https://gilalmeidaarte.com.br/meus-pedidos.html?payment_status=approved&external_reference=${pedidoId}`,
+                failure: 'https://gilalmeidaarte.com.br/precos.html',
+                pending: 'https://gilalmeidaarte.com.br/precos.html'
             },
             auto_return: 'approved',
             payment_methods: {
                 excluded_payment_types: [],
                 installments: 12
             },
-            external_reference: crypto.randomUUID()
+            external_reference: pedidoId || crypto.randomUUID()
         };
 
         const result = await preference.create({ body: preferenceData });
@@ -135,6 +176,39 @@ app.get('/api/check-payment/:paymentId', async (req, res) => {
             error: error.message || 'Erro ao verificar pagamento'
         });
     }
+});
+
+// ===== ENDPOINT: Webhook para receber notificações do Mercado Pago =====
+app.post('/api/webhook', async (req, res) => {
+    try {
+        const { type, data, action } = req.body;
+        
+        console.log('Webhook recebido:', { type, action, data });
+        
+        // Se for uma notificação de pagamento
+        if (type === 'payment') {
+            const paymentId = data.id;
+            
+            const payment = new Payment(client);
+            const paymentInfo = await payment.get({ id: paymentId });
+            
+            console.log(`Pagamento ${paymentId} - Status: ${paymentInfo.status}`);
+            
+            // Aqui você pode atualizar o status do pedido no Firestore
+            // Buscar o pedido pelo external_reference ou outro campo
+        }
+        
+        res.status(200).json({ received: true });
+        
+    } catch (error) {
+        console.error('Erro no webhook:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===== ENDPOINT: Health check =====
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // Iniciar servidor
