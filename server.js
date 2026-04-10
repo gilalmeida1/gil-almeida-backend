@@ -13,9 +13,101 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Verificar se o token existe
+if (!process.env.MP_ACCESS_TOKEN) {
+    console.error('❌ MP_ACCESS_TOKEN não configurado!');
+}
+
 // Configuração do Mercado Pago
 const client = new MercadoPagoConfig({
     accessToken: process.env.MP_ACCESS_TOKEN
+});
+
+// ===== ENDPOINT: Criar pagamento com cartão =====
+app.post('/api/create-card-payment', async (req, res) => {
+    try {
+        const { 
+            valor, 
+            descricao, 
+            nome, 
+            email, 
+            cpf,
+            cardNumber,
+            cardExpiryMonth,
+            cardExpiryYear,
+            cardCvv,
+            cardholderName,
+            installments 
+        } = req.body;
+        
+        console.log('📝 Recebendo pagamento:', { valor, descricao, nome, email });
+        
+        // Validar dados do cartão
+        if (!cardNumber || !cardExpiryMonth || !cardExpiryYear || !cardCvv || !cardholderName) {
+            throw new Error('Dados do cartão incompletos');
+        }
+        
+        // Determinar a bandeira do cartão (simplificado)
+        let paymentMethodId = 'visa';
+        const firstDigit = cardNumber.toString().charAt(0);
+        if (firstDigit === '5') paymentMethodId = 'master';
+        else if (firstDigit === '3') paymentMethodId = 'amex';
+        
+        // Criar pagamento
+        const payment = new Payment(client);
+        
+        const paymentData = {
+            transaction_amount: parseFloat(valor),
+            description: descricao,
+            payment_method_id: paymentMethodId,
+            installments: installments || 1,
+            token: null, // Para Checkout Transparente, precisamos do token
+            payer: {
+                email: email || 'cliente@email.com',
+                first_name: nome || 'Cliente',
+                identification: cpf ? {
+                    type: 'CPF',
+                    number: cpf.replace(/\D/g, '')
+                } : undefined
+            }
+        };
+
+        // Se temos todos os dados do cartão, usamos o método simplificado
+        if (cardNumber && cardExpiryMonth && cardExpiryYear && cardCvv) {
+            paymentData.card = {
+                card_number: cardNumber.replace(/\s/g, ''),
+                expiration_month: parseInt(cardExpiryMonth),
+                expiration_year: parseInt(cardExpiryYear),
+                security_code: cardCvv,
+                cardholder: {
+                    name: cardholderName,
+                    identification: cpf ? {
+                        type: 'CPF',
+                        number: cpf.replace(/\D/g, '')
+                    } : undefined
+                }
+            };
+        }
+
+        const result = await payment.create({ body: paymentData });
+        
+        console.log('✅ Pagamento criado:', result.id, result.status);
+        
+        res.json({
+            success: true,
+            payment_id: result.id,
+            status: result.status,
+            status_detail: result.status_detail,
+            approved: result.status === 'approved'
+        });
+        
+    } catch (error) {
+        console.error('❌ Erro ao criar pagamento:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Erro ao criar pagamento'
+        });
+    }
 });
 
 // ===== ENDPOINT: Criar pagamento PIX =====
@@ -23,10 +115,12 @@ app.post('/api/create-pix-payment', async (req, res) => {
     try {
         const { valor, descricao, nome, email, cpf } = req.body;
         
+        console.log('📝 Gerando PIX:', { valor, descricao });
+        
         const payment = new Payment(client);
         
         const paymentData = {
-            transaction_amount: valor,
+            transaction_amount: parseFloat(valor),
             description: descricao,
             payment_method_id: 'pix',
             date_of_expiration: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
@@ -35,12 +129,14 @@ app.post('/api/create-pix-payment', async (req, res) => {
                 first_name: nome || 'Cliente',
                 identification: cpf ? {
                     type: 'CPF',
-                    number: cpf
+                    number: cpf.replace(/\D/g, '')
                 } : undefined
             }
         };
 
         const result = await payment.create({ body: paymentData });
+        
+        console.log('✅ PIX gerado:', result.id);
         
         res.json({
             success: true,
@@ -52,59 +148,20 @@ app.post('/api/create-pix-payment', async (req, res) => {
         });
         
     } catch (error) {
-        console.error('Erro ao criar pagamento PIX:', error);
+        console.error('❌ Erro PIX:', error);
         res.status(500).json({
             success: false,
-            error: error.message || 'Erro ao criar pagamento'
+            error: error.message || 'Erro ao criar pagamento PIX'
         });
     }
 });
 
-// ===== ENDPOINT: Criar pagamento com cartão (Checkout Transparente) =====
-app.post('/api/create-card-payment', async (req, res) => {
-    try {
-        const { valor, descricao, nome, email, cpf, token, paymentMethodId, installments } = req.body;
-        
-        const payment = new Payment(client);
-        
-        const paymentData = {
-            transaction_amount: valor,
-            description: descricao,
-            payment_method_id: paymentMethodId || 'visa',
-            token: token,
-            installments: installments || 1,
-            payer: {
-                email: email || 'cliente@email.com',
-                first_name: nome || 'Cliente',
-                identification: cpf ? {
-                    type: 'CPF',
-                    number: cpf
-                } : undefined
-            }
-        };
-
-        const result = await payment.create({ body: paymentData });
-        
-        res.json({
-            success: true,
-            payment_id: result.id,
-            status: result.status,
-            status_detail: result.status_detail
-        });
-        
-    } catch (error) {
-        console.error('Erro ao criar pagamento com cartão:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message || 'Erro ao criar pagamento'
-        });
-    }
-});
-
-// ===== ENDPOINT: Criar preferência de pagamento (Checkout Pro) =====
+// ===== ENDPOINT: Criar preferência (Checkout Pro) =====
 app.post('/api/create-preference', async (req, res) => {
     try {
         const { valor, descricao, nome, email, pedidoId } = req.body;
+        
+        console.log('📝 Criando preferência:', { valor, descricao, pedidoId });
         
         const preference = new Preference(client);
         
@@ -115,7 +172,7 @@ app.post('/api/create-preference', async (req, res) => {
                     title: descricao,
                     quantity: 1,
                     currency_id: 'BRL',
-                    unit_price: valor
+                    unit_price: parseFloat(valor)
                 }
             ],
             payer: {
@@ -128,24 +185,21 @@ app.post('/api/create-preference', async (req, res) => {
                 pending: 'https://gilalmeidaarte.com.br/precos.html'
             },
             auto_return: 'approved',
-            payment_methods: {
-                excluded_payment_types: [],
-                installments: 12
-            },
             external_reference: pedidoId || crypto.randomUUID()
         };
 
         const result = await preference.create({ body: preferenceData });
         
+        console.log('✅ Preferência criada:', result.id);
+        
         res.json({
             success: true,
             preference_id: result.id,
-            init_point: result.init_point,
-            sandbox_init_point: result.sandbox_init_point
+            init_point: result.init_point
         });
         
     } catch (error) {
-        console.error('Erro ao criar preferência:', error);
+        console.error('❌ Erro preferência:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Erro ao criar preferência'
@@ -153,7 +207,7 @@ app.post('/api/create-preference', async (req, res) => {
     }
 });
 
-// ===== ENDPOINT: Verificar status do pagamento =====
+// ===== ENDPOINT: Verificar pagamento =====
 app.get('/api/check-payment/:paymentId', async (req, res) => {
     try {
         const { paymentId } = req.params;
@@ -165,44 +219,15 @@ app.get('/api/check-payment/:paymentId', async (req, res) => {
             success: true,
             id: result.id,
             status: result.status,
-            status_detail: result.status_detail,
             approved: result.status === 'approved'
         });
         
     } catch (error) {
-        console.error('Erro ao verificar pagamento:', error);
+        console.error('❌ Erro ao verificar:', error);
         res.status(500).json({
             success: false,
-            error: error.message || 'Erro ao verificar pagamento'
+            error: error.message
         });
-    }
-});
-
-// ===== ENDPOINT: Webhook para receber notificações do Mercado Pago =====
-app.post('/api/webhook', async (req, res) => {
-    try {
-        const { type, data, action } = req.body;
-        
-        console.log('Webhook recebido:', { type, action, data });
-        
-        // Se for uma notificação de pagamento
-        if (type === 'payment') {
-            const paymentId = data.id;
-            
-            const payment = new Payment(client);
-            const paymentInfo = await payment.get({ id: paymentId });
-            
-            console.log(`Pagamento ${paymentId} - Status: ${paymentInfo.status}`);
-            
-            // Aqui você pode atualizar o status do pedido no Firestore
-            // Buscar o pedido pelo external_reference ou outro campo
-        }
-        
-        res.status(200).json({ received: true });
-        
-    } catch (error) {
-        console.error('Erro no webhook:', error);
-        res.status(500).json({ error: error.message });
     }
 });
 
@@ -211,7 +236,11 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Iniciar servidor
+// ===== ROTA RAIZ =====
+app.get('/', (req, res) => {
+    res.json({ message: 'API do Gil Almeida Arte funcionando!' });
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Backend rodando na porta ${PORT}`);
 });
