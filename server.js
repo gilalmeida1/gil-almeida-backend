@@ -1,4 +1,4 @@
-// server.js - Backend corrigido para Gil Almeida Arte
+// server.js - Backend FINAL corrigido para Gil Almeida Arte
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -26,8 +26,6 @@ app.use((req, res, next) => {
 if (process.env.MP_ACCESS_TOKEN) {
     mercadopago.configure({ access_token: process.env.MP_ACCESS_TOKEN });
     console.log('✅ Mercado Pago configurado');
-} else {
-    console.error('❌ ERRO: MP_ACCESS_TOKEN não configurado!');
 }
 
 // Health check
@@ -46,7 +44,6 @@ app.post('/api/create-card-payment', async (req, res) => {
     
     const { valor, descricao, nome, email, cpf, token, installments, pedidoId } = req.body;
 
-    // Validações
     if (!token) {
         return res.status(400).json({ success: false, error: 'Token obrigatório' });
     }
@@ -72,7 +69,7 @@ app.post('/api/create-card-payment', async (req, res) => {
                     number: cpf?.replace(/\D/g, '') || '00000000000'
                 }
             },
-            // ✅ CORREÇÃO: metadata (não "meta")
+            // ✅ CORREÇÃO: metadata com dois pontos
             metadata: { 
                 order_id: pedidoId || null,
                 customer_name: nome 
@@ -204,12 +201,13 @@ app.post('/api/create-preference', async (req, res) => {
                     federal_unit: 'DF'
                 }
             },
-            meta { order_id: pedidoId || null }
+            // ✅ CORREÇÃO: metadata com dois pontos
+            metadata: { order_id: pedidoId || null }
         };
 
         const payment = await mercadopago.payment.save(payment_data);
-
         console.log('✅ Boleto gerado');
+        
         return res.json({
             success: true,
             payment_id: payment.body.id,
