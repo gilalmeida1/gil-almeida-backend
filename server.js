@@ -1,8 +1,8 @@
-// server.js - Backend FINAL CORRIGIDO
+// server.js - Backend FINAL para mercadopago v2.x
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const mercadopago = require('mercadopago');
+const { MercadoPagoConfig, Payment, Preference } = require('mercadopago');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -10,12 +10,11 @@ const PORT = process.env.PORT || 10000;
 console.log('🚀 Iniciando servidor Gil Almeida Arte...');
 
 // Configurar Mercado Pago (SDK v2.x)
-let client = null;
+let mpClient = null;
 if (process.env.MP_ACCESS_TOKEN) {
-    mercadopago.configure({
-        access_token: process.env.MP_ACCESS_TOKEN
+    mpClient = new MercadoPagoConfig({
+        accessToken: process.env.MP_ACCESS_TOKEN
     });
-    client = mercadopago;
     console.log('✅ Mercado Pago configurado');
 } else {
     console.error('❌ MP_ACCESS_TOKEN não configurado!');
@@ -30,7 +29,15 @@ app.use((req, res, next) => {
     next();
 });
 
-// Health check
+// Health check (para o cron-job)
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
 app.get('/', (req, res) => {
     res.json({ status: 'online', service: 'gil-almeida-backend' });
 });
@@ -48,32 +55,33 @@ app.post('/api/create-card-payment', async (req, res) => {
             throw new Error('Token do cartão não fornecido');
         }
         
-        if (!client) {
-            throw new Error('Cliente Mercado Pago não inicializado');
+        if (!mpClient) {
+            throw new Error('Mercado Pago não configurado');
         }
         
-        const paymentData = {
-            transaction_amount: parseFloat(valor),
-            description: descricao || 'Compra Gil Almeida Arte',
-            payment_method_id: 'visa',
-            token: token,
-            installments: installments || 1,
-            payer: {
-                email: email || 'cliente@email.com',
-                first_name: nome || 'Cliente',
-                identification: cpf ? { type: 'CPF', number: cpf.replace(/\D/g, '') } : undefined
+        const payment = new Payment(mpClient);
+        const result = await payment.create({
+            body: {
+                transaction_amount: parseFloat(valor),
+                description: descricao || 'Compra Gil Almeida Arte',
+                payment_method_id: 'visa',
+                token: token,
+                installments: installments || 1,
+                payer: {
+                    email: email || 'cliente@email.com',
+                    first_name: nome || 'Cliente',
+                    identification: cpf ? { type: 'CPF', number: cpf.replace(/\D/g, '') } : undefined
+                }
             }
-        };
+        });
         
-        const result = await client.payment.create(paymentData);
-        
-        console.log('✅ Pagamento criado:', result.body.id, result.body.status);
+        console.log('✅ Pagamento criado:', result.id, result.status);
         
         res.json({
             success: true,
-            payment_id: result.body.id,
-            status: result.body.status,
-            approved: result.body.status === 'approved'
+            payment_id: result.id,
+            status: result.status,
+            approved: result.status === 'approved'
         });
         
     } catch (error) {
@@ -97,30 +105,32 @@ app.post('/api/create-pix-payment', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Valor inválido' });
         }
 
-        if (!client) {
-            throw new Error('Cliente Mercado Pago não inicializado');
+        if (!mpClient) {
+            throw new Error('Mercado Pago não configurado');
         }
 
-        const paymentData = {
-            transaction_amount: parseFloat(valor),
-            description: descricao || 'Compra Gil Almeida Arte',
-            payment_method_id: 'pix',
-            payer: {
-                email: email || 'cliente@email.com',
-                identification: { type: 'CPF', number: cpf?.replace(/\D/g, '') || '00000000000' }
+        const payment = new Payment(mpClient);
+        const result = await payment.create({
+            body: {
+                transaction_amount: parseFloat(valor),
+                description: descricao || 'Compra Gil Almeida Arte',
+                payment_method_id: 'pix',
+                payer: {
+                    email: email || 'cliente@email.com',
+                    identification: { type: 'CPF', number: cpf?.replace(/\D/g, '') || '00000000000' }
+                }
             }
-        };
+        });
 
-        const result = await client.payment.create(paymentData);
-        const pixData = result.body.point_of_interaction?.transaction_data || {};
+        const pixData = result.point_of_interaction?.transaction_data || {};
 
         console.log('✅ PIX gerado');
         return res.json({
             success: true,
-            payment_id: result.body.id,
+            payment_id: result.id,
             qr_code_base64: pixData.qr_code_base64,
             qr_code: pixData.qr_code,
-            status: result.body.status
+            status: result.status
         });
     } catch (error) {
         console.error('❌ ERRO PIX:', error.message);
@@ -133,16 +143,17 @@ app.post('/api/create-pix-payment', async (req, res) => {
 // ==========================================
 app.get('/api/check-payment/:paymentId', async (req, res) => {
     try {
-        if (!client) {
-            throw new Error('Cliente Mercado Pago não inicializado');
+        if (!mpClient) {
+            throw new Error('Mercado Pago não configurado');
         }
 
-        const result = await client.payment.get(req.params.paymentId);
+        const payment = new Payment(mpClient);
+        const result = await payment.get({ id: req.params.paymentId });
         
         return res.json({
             payment_id: req.params.paymentId,
-            status: result.body.status,
-            approved: result.body.status === 'approved'
+            status: result.status,
+            approved: result.status === 'approved'
         });
     } catch (error) {
         console.error('❌ Erro check:', error.message);
@@ -151,49 +162,53 @@ app.get('/api/check-payment/:paymentId', async (req, res) => {
 });
 
 // ==========================================
-// 🎫 BOLETO
+// 🎫 BOLETO (via Preference)
 // ==========================================
 app.post('/api/create-preference', async (req, res) => {
     try {
         console.log('🎫 Recebido boleto');
-        const { valor, descricao, email, cpf } = req.body;
+        const { valor, descricao, email, nome, pedidoId } = req.body;
 
         if (!valor || valor <= 0) {
             return res.status(400).json({ success: false, error: 'Valor inválido' });
         }
 
-        if (!client) {
-            throw new Error('Cliente Mercado Pago não inicializado');
+        if (!mpClient) {
+            throw new Error('Mercado Pago não configurado');
         }
 
-        const paymentData = {
-            transaction_amount: parseFloat(valor),
-            description: descricao || 'Compra Gil Almeida Arte',
-            payment_method_id: 'bolbradesco',
-            payer: {
-                email: email || 'cliente@email.com',
-                identification: { type: 'CPF', number: cpf?.replace(/\D/g, '') || '00000000000' },
-                address: {
-                    zip_code: '72220270',
-                    street_name: 'QNN 8 Conjunto F',
-                    street_number: '47',
-                    neighborhood: 'Ceilândia Sul',
-                    city: 'Brasília',
-                    federal_unit: 'DF'
-                }
+        const preference = new Preference(mpClient);
+        const result = await preference.create({
+            body: {
+                items: [{
+                    id: pedidoId || Date.now().toString(),
+                    title: descricao || 'Compra Gil Almeida Arte',
+                    quantity: 1,
+                    currency_id: 'BRL',
+                    unit_price: parseFloat(valor)
+                }],
+                payer: {
+                    email: email || 'cliente@email.com',
+                    name: nome || 'Cliente'
+                },
+                back_urls: {
+                    success: `https://gilalmeidaarte.com.br/meus-pedidos.html?payment_status=approved&external_reference=${pedidoId}`,
+                    failure: 'https://gilalmeidaarte.com.br/precos.html',
+                    pending: 'https://gilalmeidaarte.com.br/precos.html'
+                },
+                auto_return: 'approved',
+                external_reference: pedidoId || Date.now().toString()
             }
-        };
+        });
         
-        const result = await client.payment.create(paymentData);
-        
-        console.log('✅ Boleto gerado');
+        console.log('✅ Preferência criada:', result.id);
 
         return res.json({
             success: true,
-            payment_id: result.body.id,
-            boleto_url: result.body.external_resource_url,
-            status: result.body.status,
-            redirect: false
+            preference_id: result.id,
+            init_point: result.init_point,
+            boleto_url: result.init_point,
+            redirect: true
         });
     } catch (error) {
         console.error('❌ ERRO BOLETO:', error.message);
@@ -207,16 +222,7 @@ app.post('/webhook/mercadopago', (req, res) => {
     res.status(200).send('OK');
 });
 
-// ===== ENDPOINT PARA CRON-JOB (HEALTH CHECK) =====
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime()
-    });
-});
-
-// Iniciar
+// Iniciar servidor
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Servidor rodando na porta ${PORT}`);
 });
