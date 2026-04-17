@@ -212,6 +212,15 @@ app.post('/webhook/mercadopago', (req, res) => {
     res.status(200).send('OK');
 });
 
+// ===== ENDPOINT PARA CRON-JOB (HEALTH CHECK) =====
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
 // Iniciar
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Servidor rodando na porta ${PORT}`);
