@@ -1,18 +1,19 @@
-// server.js - Backend FINAL (mercadopago@1.5.17)
+// server.js - Backend FINAL (mercadopago@2.x)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const mercadopago = require('mercadopago');
+const { Payment, Client } = require('mercadopago');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 console.log('🚀 Iniciando servidor Gil Almeida Arte...');
 
-// Configurar Mercado Pago (SDK v1.5.17)
+// Configurar Mercado Pago (SDK v2.x)
+let client = null;
 if (process.env.MP_ACCESS_TOKEN) {
-    mercadopago.configure({
-        access_token: process.env.MP_ACCESS_TOKEN
+    client = new Client({
+        accessToken: process.env.MP_ACCESS_TOKEN
     });
     console.log('✅ Mercado Pago configurado');
 } else {
@@ -37,55 +38,51 @@ app.get('/', (req, res) => {
 // 🃏 CARTÃO
 // ==========================================
 app.post('/api/create-card-payment', async (req, res) => {
-    console.log('💳 Recebido pagamento com cartão');
-    const { valor, descricao, nome, email, cpf, token, installments } = req.body;
-
-    if (!token) return res.status(400).json({ success: false, error: 'Token obrigatório' });
-    if (!valor || valor <= 0) return res.status(400).json({ success: false, error: 'Valor inválido' });
-
     try {
-        const payment_data = {
-            transaction_amount: parseFloat(valor),
-            description: descricao || 'Compra Gil Almeida Arte',
-            payment_method_id: 'master',
-            token: token,
-            installments: parseInt(installments) || 1,
-            statement_descriptor: 'GIL ALMEIDA ARTE',
-            payer: {
-                email: email || 'cliente@email.com',
-                identification: {
-                    type: 'CPF',
-                    number: cpf?.replace(/\D/g, '') || '00000000000'
-                }
-            },
-            metadata: { customer_name: nome },
-            capture: true
-        };
-
-        const payment = await mercadopago.payment.save(payment_data);
-        const status = payment.response.status;
-
-        console.log(`✅ MP respondeu: ${status}`);
-
-        if (status === 'approved' || status === 'pending') {
-            return res.json({
-                success: true,
-                approved: status === 'approved',
-                payment_id: payment.response.id,
-                status: status
-            });
-        } else {
-            return res.json({
-                success: false,
-                approved: false,
-                payment_id: payment.response.id,
-                status: status,
-                error: payment.response.status_detail || 'Não aprovado'
-            });
+        const { valor, descricao, nome, email, cpf, token, installments } = req.body;
+        
+        console.log('📝 Processando cartão:', { valor, descricao, token: token?.substring(0,10)+'...' });
+        
+        if (!token) {
+            throw new Error('Token do cartão não fornecido');
         }
+        
+        if (!client) {
+            throw new Error('Cliente Mercado Pago não inicializado');
+        }
+        
+        const payment = new Payment(client);
+        const result = await payment.create({
+            body: {
+                transaction_amount: parseFloat(valor),
+                description: descricao || 'Compra Gil Almeida Arte',
+                payment_method_id: 'visa',
+                token: token,
+                installments: installments || 1,
+                payer: {
+                    email: email || 'cliente@email.com',
+                    first_name: nome || 'Cliente',
+                    identification: cpf ? { type: 'CPF', number: cpf.replace(/\D/g, '') } : undefined
+                }
+            }
+        });
+        
+        console.log('✅ Pagamento criado:', result.id, result.status);
+        
+        res.json({
+            success: true,
+            payment_id: result.id,
+            status: result.status,
+            approved: result.status === 'approved'
+        });
+        
     } catch (error) {
-        console.error('❌ ERRO:', error.message);
-        return res.status(500).json({ success: false, error: error.message });
+        console.error('❌ Erro no pagamento:', error.message);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message || 'Erro ao processar pagamento',
+            details: error.cause || null
+        });
     }
 });
 
@@ -93,32 +90,40 @@ app.post('/api/create-card-payment', async (req, res) => {
 // 📱 PIX
 // ==========================================
 app.post('/api/create-pix-payment', async (req, res) => {
-    console.log('📱 Recebido pagamento PIX');
-    const { valor, descricao, email, cpf } = req.body;
-
-    if (!valor || valor <= 0) return res.status(400).json({ success: false, error: 'Valor inválido' });
-
     try {
-        const payment_data = {
-            transaction_amount: parseFloat(valor),
-            description: descricao || 'Compra Gil Almeida Arte',
-            payment_method_id: 'pix',
-            payer: {
-                email: email || 'cliente@email.com',
-                identification: { type: 'CPF', number: cpf?.replace(/\D/g, '') || '00000000000' }
-            }
-        };
+        console.log('📱 Recebido pagamento PIX');
+        const { valor, descricao, email, cpf } = req.body;
 
-        const payment = await mercadopago.payment.save(payment_data);
-        const pixData = payment.response.point_of_interaction?.transaction_data || {};
+        if (!valor || valor <= 0) {
+            return res.status(400).json({ success: false, error: 'Valor inválido' });
+        }
+
+        if (!client) {
+            throw new Error('Cliente Mercado Pago não inicializado');
+        }
+
+        const payment = new Payment(client);
+        const result = await payment.create({
+            body: {
+                transaction_amount: parseFloat(valor),
+                description: descricao || 'Compra Gil Almeida Arte',
+                payment_method_id: 'pix',
+                payer: {
+                    email: email || 'cliente@email.com',
+                    identification: { type: 'CPF', number: cpf?.replace(/\D/g, '') || '00000000000' }
+                }
+            }
+        });
+
+        const pixData = result.point_of_interaction?.transaction_data || {};
 
         console.log('✅ PIX gerado');
         return res.json({
             success: true,
-            payment_id: payment.response.id,
+            payment_id: result.id,
             qr_code_base64: pixData.qr_code_base64,
             qr_code: pixData.qr_code,
-            status: payment.response.status
+            status: result.status
         });
     } catch (error) {
         console.error('❌ ERRO PIX:', error.message);
@@ -131,11 +136,17 @@ app.post('/api/create-pix-payment', async (req, res) => {
 // ==========================================
 app.get('/api/check-payment/:paymentId', async (req, res) => {
     try {
-        const payment = await mercadopago.payment.get(req.params.paymentId);
+        if (!client) {
+            throw new Error('Cliente Mercado Pago não inicializado');
+        }
+
+        const payment = new Payment(client);
+        const result = await payment.get(req.params.paymentId);
+        
         return res.json({
             payment_id: req.params.paymentId,
-            status: payment.response.status,
-            approved: payment.response.status === 'approved'
+            status: result.status,
+            approved: result.status === 'approved'
         });
     } catch (error) {
         console.error('❌ Erro check:', error.message);
@@ -147,38 +158,46 @@ app.get('/api/check-payment/:paymentId', async (req, res) => {
 // 🎫 BOLETO
 // ==========================================
 app.post('/api/create-preference', async (req, res) => {
-    console.log('🎫 Recebido boleto');
-    const { valor, descricao, email, cpf } = req.body;
-
-    if (!valor || valor <= 0) return res.status(400).json({ success: false, error: 'Valor inválido' });
-
     try {
-        const payment_data = {
-            transaction_amount: parseFloat(valor),
-            description: descricao || 'Compra Gil Almeida Arte',
-            payment_method_id: 'bolbradesco',
-            payer: {
-                email: email || 'cliente@email.com',
-                identification: { type: 'CPF', number: cpf?.replace(/\D/g, '') || '00000000000' },
-                address: {
-                    zip_code: '72220270',
-                    street_name: 'QNN 8 Conjunto F',
-                    street_number: '47',
-                    neighborhood: 'Ceilândia Sul',
-                    city: 'Brasília',
-                    federal_unit: 'DF'
+        console.log('🎫 Recebido boleto');
+        const { valor, descricao, email, cpf } = req.body;
+
+        if (!valor || valor <= 0) {
+            return res.status(400).json({ success: false, error: 'Valor inválido' });
+        }
+
+        if (!client) {
+            throw new Error('Cliente Mercado Pago não inicializado');
+        }
+
+        const payment = new Payment(client);
+        const result = await payment.create({
+            body: {
+                transaction_amount: parseFloat(valor),
+                description: descricao || 'Compra Gil Almeida Arte',
+                payment_method_id: 'bolbradesco',
+                payer: {
+                    email: email || 'cliente@email.com',
+                    identification: { type: 'CPF', number: cpf?.replace(/\D/g, '') || '00000000000' },
+                    address: {
+                        zip_code: '72220270',
+                        street_name: 'QNN 8 Conjunto F',
+                        street_number: '47',
+                        neighborhood: 'Ceilândia Sul',
+                        city: 'Brasília',
+                        federal_unit: 'DF'
+                    }
                 }
             }
-        };
-
-        const payment = await mercadopago.payment.save(payment_data);
+        });
+        
         console.log('✅ Boleto gerado');
 
         return res.json({
             success: true,
-            payment_id: payment.response.id,
-            boleto_url: payment.response.external_resource_url,
-            status: payment.response.status,
+            payment_id: result.id,
+            boleto_url: result.external_resource_url,
+            status: result.status,
             redirect: false
         });
     } catch (error) {
