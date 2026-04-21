@@ -43,17 +43,33 @@ app.get('/', (req, res) => {
 });
 
 // ==========================================
-// 🃏 CARTÃO
+// 🃏 CARTÃO (COM DETECÇÃO DE BANDEIRA)
 // ==========================================
 app.post('/api/create-card-payment', async (req, res) => {
     try {
-        const { valor, descricao, nome, email, cpf, token, installments } = req.body;
+        const { valor, descricao, nome, email, cpf, token, installments, cardNumber } = req.body;
+        
+        // Detectar a bandeira do cartão baseado nos primeiros dígitos
+        let paymentMethodId = 'visa'; // padrão
+        const firstDigits = cardNumber ? cardNumber.replace(/\s/g, '').substring(0, 2) : '';
+        
+        if (firstDigits === '51' || firstDigits === '52' || firstDigits === '53' || firstDigits === '54' || firstDigits === '55') {
+            paymentMethodId = 'master';
+        } else if (firstDigits === '34' || firstDigits === '37') {
+            paymentMethodId = 'amex';
+        } else if (firstDigits === '4') {
+            paymentMethodId = 'visa';
+        } else if (firstDigits === '50' || firstDigits === '56' || firstDigits === '57' || firstDigits === '58' || firstDigits === '60') {
+            paymentMethodId = 'elo';
+        }
         
         console.log('📝 Processando cartão:', { 
             valor, 
             descricao, 
             token: token?.substring(0, 10) + '...',
-            installments 
+            installments,
+            paymentMethodId,
+            firstDigits
         });
         
         if (!token) {
@@ -69,7 +85,7 @@ app.post('/api/create-card-payment', async (req, res) => {
             body: {
                 transaction_amount: parseFloat(valor),
                 description: descricao || 'Compra Gil Almeida Arte',
-                payment_method_id: 'visa',
+                payment_method_id: paymentMethodId,
                 token: token,
                 installments: installments || 1,
                 payer: {
