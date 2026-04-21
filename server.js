@@ -1,4 +1,4 @@
-// server.js - Backend FINAL CORRIGIDO (versão compatível)
+// server.js - Backend FINAL COM DETECÇÃO DE BANDEIRA
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -42,6 +42,32 @@ app.get('/', (req, res) => {
     res.json({ status: 'online', service: 'gil-almeida-backend' });
 });
 
+// ===== FUNÇÃO PARA DETECTAR BANDEIRA DO CARTÃO =====
+function detectCardBrand(cardNumber) {
+    if (!cardNumber) return 'visa';
+    const clean = cardNumber.replace(/\s/g, '');
+    const firstTwo = clean.substring(0, 2);
+    const firstFour = clean.substring(0, 4);
+    
+    // Visa: começa com 4
+    if (clean.startsWith('4')) return 'visa';
+    // Mastercard: 51-55 ou 2221-2720
+    if (firstTwo >= '51' && firstTwo <= '55') return 'master';
+    if (firstFour >= '2221' && firstFour <= '2720') return 'master';
+    // American Express: 34 ou 37
+    if (firstTwo === '34' || firstTwo === '37') return 'amex';
+    // Elo: prefixos específicos
+    const eloPrefixes = ['4011', '4312', '4389', '4514', '4576', '5041', '5067', '5090', '6277', '6362', '6363'];
+    if (eloPrefixes.some(prefix => clean.startsWith(prefix))) return 'elo';
+    if (clean.startsWith('65') && parseInt(firstFour) >= 6500 && parseInt(firstFour) <= 6509) return 'elo';
+    // Diners Club: 36, 38, 300-305
+    if (firstTwo === '36' || firstTwo === '38' || (clean.startsWith('30') && parseInt(clean.substring(0, 3)) <= 305)) return 'diners';
+    // Hipercard
+    if (clean.startsWith('6062') || clean.startsWith('6376') || clean.startsWith('6395')) return 'hipercard';
+    
+    return 'visa'; // padrão
+}
+
 // ==========================================
 // 🃏 CARTÃO (COM DETECÇÃO DE BANDEIRA)
 // ==========================================
@@ -49,19 +75,8 @@ app.post('/api/create-card-payment', async (req, res) => {
     try {
         const { valor, descricao, nome, email, cpf, token, installments, cardNumber } = req.body;
         
-        // Detectar a bandeira do cartão baseado nos primeiros dígitos
-        let paymentMethodId = 'visa'; // padrão
-        const firstDigits = cardNumber ? cardNumber.replace(/\s/g, '').substring(0, 2) : '';
-        
-        if (firstDigits === '51' || firstDigits === '52' || firstDigits === '53' || firstDigits === '54' || firstDigits === '55') {
-            paymentMethodId = 'master';
-        } else if (firstDigits === '34' || firstDigits === '37') {
-            paymentMethodId = 'amex';
-        } else if (firstDigits === '4') {
-            paymentMethodId = 'visa';
-        } else if (firstDigits === '50' || firstDigits === '56' || firstDigits === '57' || firstDigits === '58' || firstDigits === '60') {
-            paymentMethodId = 'elo';
-        }
+        // Detectar a bandeira do cartão
+        const paymentMethodId = detectCardBrand(cardNumber);
         
         console.log('📝 Processando cartão:', { 
             valor, 
@@ -69,7 +84,7 @@ app.post('/api/create-card-payment', async (req, res) => {
             token: token?.substring(0, 10) + '...',
             installments,
             paymentMethodId,
-            firstDigits
+            cardNumber: cardNumber?.substring(0, 6) + '****'
         });
         
         if (!token) {
